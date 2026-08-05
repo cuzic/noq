@@ -381,7 +381,22 @@ pub struct FourTuple {
 
 impl FourTuple {
     /// Creates a new [`FourTuple`].
-    pub fn new(mut remote: SocketAddr, local_ip: Option<IpAddr>) -> Self {
+    pub fn new(remote: SocketAddr, local_ip: Option<IpAddr>) -> Self {
+        // noq#738: canonicalize IPv4-mapped-IPv6 addresses (`::ffff:a.b.c.d`) down to
+        // plain IPv4 up front, so every downstream comparison of `FourTuple` (the
+        // derived `PartialEq`/`Hash`/`Eq` used e.g. by `Endpoint`'s
+        // `HashMap<FourTuple, ConnectionHandle>`, plus the several `== .remote` /
+        // `!= .remote` comparisons in `Connection`) sees one canonical
+        // representation regardless of which form the OS happened to report a
+        // given datagram's address in. Observed on Android: a dual-stack socket
+        // bound to a physical network interface reports the same peer as
+        // `[::ffff:a.b.c.d]:p` on some code paths and `a.b.c.d:p` on others, which
+        // otherwise makes an address compare unequal to itself and silently drops
+        // packets in `Connection::early_discard_packet` before they ever reach
+        // frame processing.
+        let mut remote = SocketAddr::new(remote.ip().to_canonical(), remote.port());
+        let local_ip = local_ip.map(|ip| ip.to_canonical());
+
         if let SocketAddr::V6(socket_addr) = &mut remote {
             // RFC3493 §3.3
             // > (…) applications should set this field to zero when constructing a sockaddr_in6,
